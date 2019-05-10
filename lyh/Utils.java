@@ -19,8 +19,10 @@ import android.content.pm.PackageInfo;
 import android.net.Uri;
 import android.os.Environment;
 import android.os.SystemClock;
+import android.support.annotation.NonNull;
 import android.util.Log;
 
+import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.File;
@@ -29,8 +31,11 @@ import java.io.FileOutputStream;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
+import java.net.SocketTimeoutException;
 import java.net.URL;
+import java.net.URLConnection;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
@@ -39,6 +44,10 @@ import java.util.List;
 import java.util.Scanner;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.zip.CRC32;
 import java.util.zip.CheckedOutputStream;
 import java.util.zip.ZipEntry;
@@ -48,16 +57,17 @@ import java.util.zip.ZipOutputStream;
  * 陆陆大顺的工具类
  */
 public class Utils {
-    public final static String TAG = "LYH.UTILS";
     public final static String OS_NAME = System.getProperty("os.name");
     public final static String FORMAT_DATETIME = "yyyy-MM-dd HH:mm:ss";
     public final static String FORMAT_DATE = "yyyy-MM-dd";
     public final static String FORMAT_TIME = "HH:mm:ss";
+    public final static String FORMAT_TIMESTEMP_FILENAME = "yyyyMMdd_HHmmss";
     public final static String DIR_DATA = Environment.getDataDirectory().getAbsolutePath();
     public static final long PERIOD_DAY = 1000 * 60 * 60 * 24;
     public static final long PERIOD_HOUR = 1000 * 60 * 60;
     public static final long PERIOD_MINUTE = 1000 * 60;
     public static final long PERIOD_SECOND = 1000;
+    public static String TAG = "LYH.UTILS";
 
     private static BroadcastReceiver onDownloadComplete;
 
@@ -72,11 +82,12 @@ public class Utils {
     }
 
     /**
-     * 字符串类，实现类似TStringList的功能，注意本类不是线程安全的！
+     * 字符串类，实现类似TStringList的功能，线程安全的！
      * 字符串不包含\r，\n等换行符之类，每个字符串一行
      * 可添加、删除、保存到文件、从文件读取、转成字符串，从字符串读取
      */
     public static class StringList extends ArrayList<String> {
+        private Lock lock = new ReentrantLock();
         private String separator = "\n";
         public String fileName = "";
 
@@ -100,7 +111,12 @@ public class Utils {
          * @return
          */
         public String toArrayString() {
-            return super.toString();
+            lock.lock();
+            try {
+                return super.toString();
+            } finally {
+                lock.unlock();
+            }
         }
 
         /**
@@ -111,7 +127,12 @@ public class Utils {
          * @return
          */
         public int insert(int index, String s) {
-            add(index, s);
+            lock.lock();
+            try {
+                add(index, s);
+            } finally {
+                lock.unlock();
+            }
             return index;
         }
 
@@ -121,10 +142,15 @@ public class Utils {
          * @return 返回结果字符串
          */
         public String toString() {
-            StringBuilder buf = new StringBuilder(4096);
-            for (int i = 0; i < size(); i++)
-                buf.append(get(i) + separator);
-            return buf.toString();
+            lock.lock();
+            try {
+                StringBuilder buf = new StringBuilder(4096);
+                for (int i = 0; i < size(); i++)
+                    buf.append(get(i) + separator);
+                return buf.toString();
+            } finally {
+                lock.unlock();
+            }
         }
 
         /**
@@ -133,15 +159,21 @@ public class Utils {
          * @param s
          */
         public void fromString(String s) {
-            clear();
-            String[] strings = s.split(separator);
-            for (int i = 0; i <= strings.length; i++)
-                add(strings[i]);
+            lock.lock();
+            try {
+                clear();
+                String[] strings = s.split(separator);
+                for (int i = 0; i <= strings.length; i++)
+                    add(strings[i]);
+            } finally {
+                lock.unlock();
+            }
         }
 
         public boolean saveToFile(String filename) {
             this.fileName = filename;
             FileOutputStream fos = null;
+            lock.lock();
             try {
                 fos = new FileOutputStream(filename);
                 String s;
@@ -153,6 +185,8 @@ public class Utils {
                 return true;
             } catch (Exception e) {
                 return false;
+            } finally {
+                lock.unlock();
             }
         }
 
@@ -166,6 +200,24 @@ public class Utils {
             return result ? saveToFile(fileName) : false;
         }
 
+        public void clear() {
+            lock.lock();
+            try {
+                super.clear();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        public boolean add(String s) {
+            lock.lock();
+            try {
+                return super.add(s);
+            } finally {
+                lock.unlock();
+            }
+        }
+
         /**
          * 从文件读取列表
          *
@@ -175,6 +227,7 @@ public class Utils {
         public boolean loadFromFile(String filename) {
             this.fileName = filename;
             clear();
+            lock.lock();
             try {
                 FileInputStream fis = new FileInputStream(filename);
                 Scanner scanner = new Scanner(fis);
@@ -185,6 +238,8 @@ public class Utils {
                 return true;
             } catch (Exception e) {
                 return false;
+            } finally {
+                lock.unlock();
             }
         }
 
@@ -199,15 +254,44 @@ public class Utils {
             return size();
         }
 
+        public String remove(int index) {
+            lock.lock();
+            try {
+                return super.remove(index);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        /**
+         * 删除列表中的字符串，成功返回true，失败返回false;
+         *
+         * @param s
+         * @return
+         */
+        public boolean remove(String s) {
+            lock.lock();
+            try {
+                return super.remove(s);
+            } finally {
+                lock.unlock();
+            }
+        }
+
         /**
          * 弹出最后加入的字符串
          *
          * @return 返回最后的字符串，并从列表中删除
          */
         public String pop() {
-            String s = get(size() - 1);
-            remove(size() - 1);
-            return s;
+            lock.lock();
+            try {
+                String s = super.get(size() - 1);
+                super.remove(size() - 1);
+                return s;
+            } finally {
+                lock.unlock();
+            }
         }
     }
 
@@ -233,7 +317,7 @@ public class Utils {
             am.set(AlarmManager.RTC, System.currentTimeMillis() + 5000, restartIntent); // 1秒钟后重启应用
             System.gc();
             String s = ex.getMessage() + "\r\n" + stackTraceToString(ex);
-            Log.i(TAG, s);
+            Log.e(TAG, s);
             if (url != null) {
                 try {
                     final String fn = DIR_CACHE(context) + "/" + getAppName(context) + ".txt";
@@ -241,7 +325,7 @@ public class Utils {
                         new Thread(new Runnable() {
                             @Override
                             public void run() {
-                                httpPostFile(url, fn);
+                                httpPostFile(url, fn, 20);
                                 deleteFile(fn);
                             }
                         }).start();
@@ -374,6 +458,10 @@ public class Utils {
         }
     }
 
+    public static boolean mkdirs(String fullPathAndName) {
+        return new File(new File(fullPathAndName).getParent()).mkdirs();
+    }
+
     /**
      * 从文件名全路径里面，提取文件名部分，例如：
      * /abc/def/xyz.txt ==> xyz.txt
@@ -393,7 +481,19 @@ public class Utils {
      * @return
      */
     public static String left(String s, int len) {
-        return s.substring(0, len);
+        return s.substring(0, Math.min(len, s.length()));
+    }
+
+    /**
+     * 从字符串中取分隔符左边的字符，例如 left("aaaa=1234", "=") == > "aaa"
+     *
+     * @param s
+     * @param seperator 分隔字符串
+     * @return 如果有分隔符返回分隔符左边的，否则返回原始字符串
+     */
+    public static String left(String s, String seperator) {
+        int idx = s.indexOf(seperator);
+        return s.substring(0, idx == -1 ? s.length() : idx);
     }
 
     /**
@@ -404,7 +504,19 @@ public class Utils {
      * @return
      */
     public static String right(String s, int len) {
-        return s.substring(s.length() - len, s.length() - 1);
+        return s.substring(Math.max(0, s.length() - len), s.length());
+    }
+
+    /**
+     * 从字符串中取分隔符右边的字符，例如 right("aaaa=1234", "=") == > "1234"
+     *
+     * @param s
+     * @param seperator 分隔字符串
+     * @return 如果有分隔符返回分隔符右边的，否则返回原始字符串
+     */
+    public static String right(String s, String seperator) {
+        int idx = s.indexOf(seperator);
+        return s.substring(idx == -1 ? 0 : idx + seperator.length(), s.length());
     }
 
     /**
@@ -530,18 +642,43 @@ public class Utils {
      * }
      * }).start();
      */
-    public static String httpPostFile(String uri, String fileName) {
+
+    public static String httpPostFile(String uri, String fileName, final int secondTimeout) {
         final String BOUNDARY = "*****";
         final String TWO_HYPHENS = "--";
         final String LINE_END = "\r\n";
         final String HEAD_END = "\r\n\r\n";
 
-        String sName = extractFileName(fileName);
+        class InterruptThread implements Runnable {
+            Thread parent;
+            HttpURLConnection con;
 
+            public InterruptThread(Thread parent, HttpURLConnection con) {
+                this.parent = parent;
+                this.con = con;
+            }
+
+            public void run() {
+                try {
+                    Thread.sleep(1000 * secondTimeout * 2);
+                    // 无论如何，在超时后，强行断开链接，防止吊死
+                    con.disconnect();
+                } catch (Exception e) {
+                    // Nothing
+                }
+            }
+        }
+
+        String sName = extractFileName(fileName);
         try {
             URL url = new URL(uri);
             FileInputStream fis = new FileInputStream(fileName);
+
             HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+            new Thread(new InterruptThread(Thread.currentThread(), connection)).start();
+
+            connection.setConnectTimeout(10 * 1000);
+            connection.setReadTimeout(1000 * secondTimeout);
             connection.setDoOutput(true);
             connection.setDoInput(true);
             connection.setUseCaches(false);
@@ -562,9 +699,25 @@ public class Utils {
             request.writeBytes(LINE_END + TWO_HYPHENS + BOUNDARY + TWO_HYPHENS + LINE_END);
             request.flush();
             request.close();
-            InputStream is = connection.getInputStream();
-            return streamToString(is);
+
+            int status = connection.getResponseCode();
+            if (status == connection.HTTP_OK) {
+                StringBuffer out = new StringBuffer();
+                BufferedReader reader = new BufferedReader(new InputStreamReader(connection.getInputStream()));
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    out.append(line);
+                }
+                reader.close();
+                connection.disconnect();
+                return out.toString();
+            } else
+                return connection.getResponseMessage();
+        } catch (SocketTimeoutException e) {
+            Log.d(TAG, "Socket超时: " + secondTimeout);
+            return "Socket Timeout";
         } catch (Exception e) {
+            Log.d(TAG, "HTTP POST异常: " + e.getCause());
             return e.getMessage();
         }
     }
@@ -589,12 +742,12 @@ public class Utils {
     /**
      * 按给定的启动时间（hh:mm:ss）设置定时任务，如果时间已过，则自动到下一个周期开始
      *
-     * @param time   定时时刻，按hh:mm:ss 例如 12:20:35 表示12点20分35秒开始运行，以后每隔指定周期运行
-     * @param task   定时的任务
-     * @param period 周期间隔，单位毫秒
+     * @param time       定时时刻，按hh:mm:ss 例如 12:20:35 表示12点20分35秒开始运行，以后每隔指定周期运行
+     * @param task       定时的任务
+     * @param periodMSec 周期间隔，单位毫秒
      * @return
      */
-    public static Timer scheduleTask(String time, TimerTask task, long period) {
+    public static Timer scheduleTask(String time, TimerTask task, long periodMSec) {
         Timer timer = new Timer();
         Date date = dateFromString(time);
         long begin = date.getTime();
@@ -603,9 +756,9 @@ public class Utils {
         if (now > begin) // 如果当前时间 > 定时开始的时刻，需要调整到下一次开始的时刻开始！
         {
             long diff = now - begin;
-            date = addTime(date, period * roundUp(1.0 * diff / period));
+            date = addTime(date, periodMSec * roundUp(1.0 * diff / periodMSec));
         }
-        timer.scheduleAtFixedRate(task, date, period);
+        timer.scheduleAtFixedRate(task, date, periodMSec);
         return timer;
     }
 
@@ -803,6 +956,10 @@ public class Utils {
 
     public static String currentDateTime() {
         return new SimpleDateFormat(FORMAT_DATETIME).format(new Date());
+    }
+
+    public static String currentTimestampFilename() {
+        return new SimpleDateFormat(FORMAT_TIMESTEMP_FILENAME).format(new Date());
     }
 
     /**
@@ -1015,5 +1172,53 @@ public class Utils {
     public static boolean updateApp(String apkURL, String filename) {
         if (!downloadFile(apkURL, filename)) return false;
         return apkInstall(filename);
+    }
+
+
+    /**
+     * 判断MainActivity是否活动
+     *
+     * @param context      一个context
+     * @param activityName 要判断Activity
+     * @return boolean
+     */
+    public static boolean isMainActivityAlive(Context context, String activityName) {
+        ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        List<ActivityManager.RunningTaskInfo> list = am.getRunningTasks(100);
+        for (ActivityManager.RunningTaskInfo info : list) {
+            // 注意这里的 topActivity 包含 packageName和className，可以打印出来看看
+            if (info.topActivity.toString().equals(activityName) || info.baseActivity.toString().equals(activityName)) {
+                Log.i(TAG, info.topActivity.getPackageName() + " info.baseActivity.getPackageName()=" + info.baseActivity.getPackageName());
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 检测某Activity是否在当前Task的栈顶
+     */
+    public static boolean isTopActivity(Context context, String activityName) {
+        ActivityManager manager = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        List<ActivityManager.RunningTaskInfo> runningTaskInfos = manager.getRunningTasks(1);
+        String cmpNameTemp = null;
+        if (runningTaskInfos != null) {
+            cmpNameTemp = runningTaskInfos.get(0).topActivity.toString();
+        }
+        if (cmpNameTemp == null) {
+            return false;
+        }
+        return cmpNameTemp.equals(activityName);
+    }
+
+    public static Process launchLogcat(String filename, String tag) {
+        Process process = null;
+        String cmd = String.format("logcat -v time -f %s %s:* \n", filename, tag);
+        try {
+            process = Runtime.getRuntime().exec(cmd);
+        } catch (IOException e) {
+            process = null;
+        }
+        return process;
     }
 }
